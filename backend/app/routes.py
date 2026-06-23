@@ -8,6 +8,7 @@ from fastapi.security import OAuth2PasswordBearer
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from ml.predict import calculate_health_score
+from rag.query import get_ai_explanation
 
 router = APIRouter()
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
@@ -50,6 +51,7 @@ def create_report(
     db: Session = Depends(get_db),
     current_owner: Owner = Depends(get_current_owner)
 ):
+    # Get previous month's revenue for trend calculation
     previous_report = db.query(MonthlyReport).filter(
         MonthlyReport.owner_id == current_owner.id
     ).order_by(MonthlyReport.id.desc()).first()
@@ -59,6 +61,7 @@ def create_report(
         MonthlyReport.owner_id == current_owner.id
     ).count()
 
+    # Step 1: Run ML model to get health score
     result = calculate_health_score(
         revenue=data.revenue,
         expenses=data.expenses,
@@ -68,6 +71,14 @@ def create_report(
         months_active=max(months_active, 1)
     )
 
+    # Step 2: Run RAG pipeline to get AI explanation
+    ai_explanation = get_ai_explanation(
+        health_score=float(result["health_score"]),
+        risk_level=result["risk_level"],
+        breakdown=result["breakdown"]
+    )
+
+    # Step 3: Save everything to database
     report = MonthlyReport(
         owner_id=current_owner.id,
         month=data.month,
@@ -78,7 +89,7 @@ def create_report(
         gst_filed=data.gst_filed,
         health_score=float(result["health_score"]),
         risk_level=result["risk_level"],
-        ai_explanation=result["message"]
+        ai_explanation=ai_explanation
     )
     db.add(report)
     db.commit()
