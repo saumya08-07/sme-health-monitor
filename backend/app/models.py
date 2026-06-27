@@ -36,3 +36,8 @@ class MonthlyReport(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     owner = relationship("Owner", back_populates="reports")
+    outstanding_loans = Column(Float, default=0)
+    num_employees = Column(Integer, default=1)
+    industry = Column(String, default="retail")
+    day = Column(Integer, default=1)
+    notes = Column(String, default="")

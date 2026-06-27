@@ -51,7 +51,6 @@ def create_report(
     db: Session = Depends(get_db),
     current_owner: Owner = Depends(get_current_owner)
 ):
-    # Get previous month's revenue for trend calculation
     previous_report = db.query(MonthlyReport).filter(
         MonthlyReport.owner_id == current_owner.id
     ).order_by(MonthlyReport.id.desc()).first()
@@ -61,24 +60,24 @@ def create_report(
         MonthlyReport.owner_id == current_owner.id
     ).count()
 
-    # Step 1: Run ML model to get health score
     result = calculate_health_score(
         revenue=data.revenue,
         expenses=data.expenses,
         pending_payments=data.pending_payments,
         gst_filed=data.gst_filed,
+        outstanding_loans=data.outstanding_loans,
+        num_employees=data.num_employees,
         previous_revenue=previous_revenue,
         months_active=max(months_active, 1)
     )
 
-    # Step 2: Run RAG pipeline to get AI explanation
     ai_explanation = get_ai_explanation(
         health_score=float(result["health_score"]),
         risk_level=result["risk_level"],
-        breakdown=result["breakdown"]
+        breakdown=result["breakdown"],
+        industry=data.industry
     )
 
-    # Step 3: Save everything to database
     report = MonthlyReport(
         owner_id=current_owner.id,
         month=data.month,
@@ -87,6 +86,9 @@ def create_report(
         expenses=data.expenses,
         pending_payments=data.pending_payments,
         gst_filed=data.gst_filed,
+        outstanding_loans=data.outstanding_loans,
+        num_employees=data.num_employees,
+        industry=data.industry,
         health_score=float(result["health_score"]),
         risk_level=result["risk_level"],
         ai_explanation=ai_explanation
@@ -119,3 +121,29 @@ def get_report(
     if not report:
         raise HTTPException(status_code=404, detail="Report not found")
     return report
+from pydantic import BaseModel as PydanticBase
+
+class ChatRequest(PydanticBase):
+    message: str
+    context: str = ""
+
+@router.post("/chat")
+def chat(data: ChatRequest, current_owner: Owner = Depends(get_current_owner)):
+    import ollama
+    prompt = f"""You are a helpful AI financial advisor for small business owners in India.
+
+The user's current business context:
+{data.context}
+
+User question: {data.message}
+
+Give a specific, helpful answer in 2-4 sentences. Use their actual numbers if available. Be direct and actionable."""
+
+    try:
+        response = ollama.chat(
+            model="llama3.2",
+            messages=[{"role": "user", "content": prompt}]
+        )
+        return {"response": response['message']['content']}
+    except:
+        return {"response": "I couldn't connect to the AI right now. Make sure Ollama is running with 'ollama serve'."}

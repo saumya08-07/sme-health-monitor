@@ -1,86 +1,95 @@
 import os
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import Chroma
 import ollama
 
 CHROMA_DIR = os.path.join(os.path.dirname(__file__), '..', 'chroma_db')
+OLLAMA_TIMEOUT_SECONDS = 60
 
-def get_ai_explanation(health_score: float, risk_level: str, breakdown: dict) -> str:
-    """
-    Takes ML results and queries ChromaDB for relevant context,
-    then asks Llama to write a plain English explanation.
-    """
+
+def _fallback_text(risk_level: str, breakdown: dict) -> str:
+    """Used whenever Ollama is slow, unreachable, or errors out."""
+    expense_ratio = breakdown.get('expense_ratio', 0)
+    pending_ratio = breakdown.get('pending_ratio', 0)
+
+    if risk_level == "red":
+        return (
+            f"Critical: Health score reflects serious risk. Expense ratio {expense_ratio} "
+            f"means you're spending more than earning. Immediate action: cut expenses by "
+            f"{round((expense_ratio - 0.8) * 100)}% and collect outstanding payments "
+            f"(currently {pending_ratio * 100:.0f}% of revenue) within 30 days."
+        )
+    elif risk_level == "yellow":
+        return (
+            "Caution: Monitor cash flow closely. Collect pending payments and review "
+            "expense categories this month."
+        )
+    else:
+        return "Healthy: Business is performing well. Continue current financial discipline."
+
+
+def get_ai_explanation(health_score: float, risk_level: str, breakdown: dict, industry: str = "retail") -> str:
     try:
-        # Build search query from the owner's situation
         query = f"""
-        SME business with expense ratio {breakdown['expense_ratio']},
-        revenue trend {breakdown['revenue_trend']}%,
-        pending payment ratio {breakdown['pending_ratio']},
-        GST filed: {breakdown['gst_filed']},
-        health score {health_score}, risk level {risk_level}
+        SME in {industry} sector with:
+        - Health score {health_score}/100
+        - Expense ratio {breakdown.get('expense_ratio', 0)}
+        - Revenue trend {breakdown.get('revenue_trend', 0)}%
+        - Profit margin {breakdown.get('profit_margin', 0)}%
+        - Pending payment ratio {breakdown.get('pending_ratio', 0)}
+        - Loan to revenue ratio {breakdown.get('loan_to_revenue', 0)}
+        - GST filed: {breakdown.get('gst_filed', 0)}
         """
 
-        # Search ChromaDB for relevant financial guidelines
         embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
         chroma_path = os.path.abspath(CHROMA_DIR)
-        vectorstore = Chroma(
-            persist_directory=chroma_path,
-            embedding_function=embeddings
-        )
-        relevant_docs = vectorstore.similarity_search(query, k=2)
+        vectorstore = Chroma(persist_directory=chroma_path, embedding_function=embeddings)
+        relevant_docs = vectorstore.similarity_search(query, k=3)
         context = "\n".join([doc.page_content for doc in relevant_docs])
 
-        # Ask Llama to explain in plain English
-        prompt = f"""
-You are a financial advisor helping a small business owner understand their financial health.
+        expense_ratio = breakdown.get('expense_ratio', 0)
+        pending_ratio = breakdown.get('pending_ratio', 0)
+        gst_filed = breakdown.get('gst_filed', 0)
 
-Their financial data:
-- Health Score: {health_score}/100
-- Risk Level: {risk_level.upper()}
-- Revenue Trend: {breakdown['revenue_trend']}% vs last month
-- Expense Ratio: {breakdown['expense_ratio']} (expenses/revenue)
-- Pending Payment Ratio: {breakdown['pending_ratio']} (unpaid invoices/revenue)
-- GST Filed on Time: {"Yes" if breakdown['gst_filed'] == 1 else "No"}
+        prompt = f"""You are a senior financial advisor at a bank reviewing a small business owner's monthly financials.
 
-Relevant financial guidelines:
+Business sector: {industry}
+Health Score: {health_score}/100 — Risk Level: {risk_level.upper()}
+
+Key metrics this month:
+- Revenue trend vs last month: {breakdown.get('revenue_trend', 0)}%
+- Expense ratio (expenses/revenue): {expense_ratio} {"⚠️ CRITICAL — spending more than earning" if expense_ratio > 1 else "✓ OK" if expense_ratio < 0.8 else "⚠️ High"}
+- Profit margin: {breakdown.get('profit_margin', 0)}%
+- Pending payments ratio: {pending_ratio} {"⚠️ High — clients not paying" if pending_ratio > 0.3 else "✓ OK"}
+- Outstanding loan burden: {breakdown.get('loan_to_revenue', 0)} of revenue
+- GST compliance: {"Filed on time ✓" if gst_filed == 1 else "DELAYED ⚠️"}
+- Revenue per employee: ₹{breakdown.get('revenue_per_employee', 0):,.0f}
+
+Regulatory context:
 {context}
 
-Write a 3-4 sentence plain English explanation of:
-1. What these numbers mean for their business
-2. What is the biggest risk right now
-3. One specific action they should take immediately
+Write a specific, direct financial advisory note with:
+1. One sentence summary of their financial situation right now
+2. The single biggest risk factor with exact numbers from their data
+3. Two concrete actions they must take this month with deadlines
+4. One positive thing if their score is above 50
 
-Keep it simple, direct, and actionable. No jargon.
-"""
+Be specific with numbers. No generic advice. Speak directly to the owner as "your business"."""
 
-        response = ollama.chat(
-            model="llama3.2",
-            messages=[{"role": "user", "content": prompt}]
-        )
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(
+                ollama.chat,
+                model="llama3.2",
+                messages=[{"role": "user", "content": prompt}]
+            )
+            response = future.result(timeout=OLLAMA_TIMEOUT_SECONDS)
 
         return response['message']['content']
 
+    except FutureTimeoutError:
+        print(f"Ollama timed out after {OLLAMA_TIMEOUT_SECONDS}s — using fallback text")
+        return _fallback_text(risk_level, breakdown)
     except Exception as e:
-        # Fallback if Ollama isn't running
-        if risk_level == "red":
-            return f"High financial stress detected (score: {health_score}/100). Your expenses exceed revenue and payments are overdue. Reduce costs immediately and collect pending payments."
-        elif risk_level == "yellow":
-            return f"Moderate financial stress detected (score: {health_score}/100). Monitor your cash flow closely and follow up on pending payments."
-        else:
-            return f"Business looks healthy (score: {health_score}/100). Keep maintaining your current financial discipline."
-
-
-if __name__ == "__main__":
-    # Test it
-    result = get_ai_explanation(
-        health_score=11.9,
-        risk_level="red",
-        breakdown={
-            "revenue_trend": -44.44,
-            "expense_ratio": 1.6,
-            "pending_ratio": 0.8,
-            "gst_filed": 0
-        }
-    )
-    print("\nAI Explanation:")
-    print(result)
+        print(f"RAG/Ollama error: {e} — using fallback text")
+        return _fallback_text(risk_level, breakdown)

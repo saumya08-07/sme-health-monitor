@@ -3,3 +3,9 @@ venv/
 __pycache__/
 *.db
 *.pyc
+
+# Generated vector store — regeneratable from rag/ingest.py
+chroma_db/
+
+# Training data — too large for git (Home Credit CSVs can exceed 100MB)
+data/*.csv

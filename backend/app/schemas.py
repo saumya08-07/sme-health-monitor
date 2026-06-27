@@ -31,20 +31,31 @@ class OwnerResponse(BaseModel):
 class ReportCreate(BaseModel):
     month: str
     year: int
+    day: int = 1
     revenue: float
     expenses: float
     pending_payments: float
-    gst_filed: int  # 1 = on time, 0 = delayed
+    gst_filed: int
+    outstanding_loans: float = 0
+    num_employees: int = 1
+    industry: str = "retail"
+    previous_month_revenue: float = 0
+    notes: str = ""
 
 class ReportResponse(BaseModel):
     id: int
     owner_id: int
     month: str
     year: int
+    day: int = 1
     revenue: float
     expenses: float
     pending_payments: float
     gst_filed: int
+    outstanding_loans: Optional[float]
+    num_employees: Optional[int]
+    industry: Optional[str]
+    notes: Optional[str]
     health_score: Optional[float]
     risk_level: Optional[str]
     ai_explanation: Optional[str]
@@ -52,7 +63,6 @@ class ReportResponse(BaseModel):
 
     class Config:
         from_attributes = True
-
 # --- Token Schema (for login) ---
 
 class Token(BaseModel):
